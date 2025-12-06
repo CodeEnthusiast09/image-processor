@@ -5,13 +5,14 @@
 [circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
 [circleci-url]: https://circleci.com/gh/nestjs/nest
 
-  # Image Processing Service
+# Image Processing Service
 
-A NestJS-based backend service that handles image uploads and processes them asynchronously in the background. Images are resized, compressed, and thumbnails are generated using a queue-based worker system.
+A NestJS-based backend service that handles image uploads and processes them asynchronously in the background. Images are stored in Minio (S3-compatible storage), resized, compressed, and thumbnails are generated using a queue-based worker system.
 
 ## 🚀 Features
 
 - **Async Image Processing**: Upload images and receive instant response while processing happens in the background
+- **S3-Compatible Storage**: Uses Minio for scalable object storage (easily switchable to AWS S3)
 - **Multiple Processing Operations**:
   - Resize (max 1920x1080, maintains aspect ratio)
   - Compress (80% quality)
@@ -21,14 +22,16 @@ A NestJS-based backend service that handles image uploads and processes them asy
 - **PostgreSQL Database**: Persistent storage of upload metadata and processing status
 - **Swagger Documentation**: Interactive API documentation at `/api/docs`
 - **Structured Logging**: Professional logging using NestJS Logger
+- **Memory-Efficient**: Files processed in memory, no local disk storage needed
 
 ## 🛠️ Tech Stack
 
 - **Framework**: NestJS
 - **Database**: PostgreSQL + TypeORM
 - **Queue**: Bull (BullMQ) + Redis
+- **Storage**: Minio (S3-compatible)
 - **Image Processing**: Sharp
-- **File Upload**: Multer
+- **File Upload**: Multer (memory storage)
 - **API Documentation**: Swagger/OpenAPI
 - **Language**: TypeScript
 
@@ -37,15 +40,15 @@ A NestJS-based backend service that handles image uploads and processes them asy
 Before running this project, ensure you have:
 
 - **Node.js** (v16 or higher)
-- **npm** or **yarn**
+- **npm**
 - **PostgreSQL** (running locally or accessible remotely)
-- **Docker** (for running Redis)
+- **Docker** (for running Redis and Minio)
 
 ## 🔧 Installation
 
 ### 1. Clone the repository
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/CodeEnthusiast09/image-processor
 cd image-processor
 ```
 
@@ -64,7 +67,40 @@ To verify Redis is running:
 docker ps
 ```
 
-### 4. Configure Environment Variables
+### 4. Start Minio (using Docker)
+```bash
+docker run -d \
+  -p 9000:9000 \
+  -p 9001:9001 \
+  --name minio \
+  -e "MINIO_ROOT_USER=minioadmin" \
+  -e "MINIO_ROOT_PASSWORD=minioadmin123" \
+  quay.io/minio/minio server /data --console-address ":9001"
+```
+
+**Access Minio Console**: http://localhost:9001
+- Username: `minioadmin`
+- Password: `minioadmin123`
+
+### 5. Create Minio Buckets
+
+**Option A: Via Web Console**
+1. Go to http://localhost:9001 and login
+2. Click "Buckets" → "Create Bucket"
+3. Create three buckets: `originals`, `processed`, `thumbnails`
+
+**Option B: Via Docker Command**
+```bash
+# Set up Minio alias
+docker exec minio mc alias set myminio http://localhost:9000 minioadmin minioadmin123
+
+# Set buckets to public (read-only)
+docker exec minio mc anonymous set download myminio/originals
+docker exec minio mc anonymous set download myminio/processed
+docker exec minio mc anonymous set download myminio/thumbnails
+```
+
+### 6. Configure Environment Variables
 
 Create a `.env` file in the project root:
 ```env
@@ -81,11 +117,21 @@ REDIS_PORT=6379
 
 # Application
 PORT=3000
+
+# Minio (S3-compatible storage)
+MINIO_ENDPOINT=localhost
+MINIO_PORT=9000
+MINIO_USE_SSL=false
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin123
+MINIO_BUCKET_ORIGINALS=originals
+MINIO_BUCKET_PROCESSED=processed
+MINIO_BUCKET_THUMBNAILS=thumbnails
 ```
 
 **Replace the database credentials with your PostgreSQL configuration.**
 
-### 5. Create PostgreSQL Database
+### 7. Create PostgreSQL Database
 ```bash
 # Connect to PostgreSQL
 psql -U your_username
@@ -107,6 +153,11 @@ npm run start:dev
 ```
 
 The server will start on `http://localhost:3000`
+
+**Access Points:**
+- API: http://localhost:3000
+- Swagger Docs: http://localhost:3000/api/docs
+- Minio Console: http://localhost:9001
 
 ### Production Mode
 ```bash
@@ -197,20 +248,15 @@ curl http://localhost:3000/upload/7448e9cc-8993-4d9d-a6f8-98285726b969/result
   "id": "7448e9cc-8993-4d9d-a6f8-98285726b969",
   "original_name": "my-image.jpg",
   "status": "completed",
-  "original_url": "/uploads/original/my-image.jpg",
-  "resized_url": "/uploads/processed/1765005321550-11259599-resized.jpeg",
-  "compressed_url": "/uploads/processed/1765005321550-11259599-compressed.jpeg",
-  "thumbnail_url": "/uploads/thumbnails/1765005321550-11259599-thumbnail.jpeg",
+  "original_url": "http://localhost:9000/originals/1733481234567-123456789.jpeg",
+  "resized_url": "http://localhost:9000/processed/1733481234567-123456789-resized.jpeg",
+  "compressed_url": "http://localhost:9000/processed/1733481234567-123456789-compressed.jpeg",
+  "thumbnail_url": "http://localhost:9000/thumbnails/1733481234567-123456789-thumbnail.jpeg",
   "completed_at": "2025-12-06T07:00:05.000Z"
 }
 ```
 
-**Access the images**:
-```
-http://localhost:3000/uploads/processed/1765005321550-11259599-resized.jpeg
-http://localhost:3000/uploads/processed/1765005321550-11259599-compressed.jpeg
-http://localhost:3000/uploads/thumbnails/1765005321550-11259599-thumbnail.jpeg
-```
+**Access the images**: Simply paste the URLs in your browser or use them directly in your application.
 
 ## 🧪 Testing the Application
 
@@ -240,7 +286,7 @@ curl http://localhost:3000/upload/<upload-id>/status
 curl http://localhost:3000/upload/<upload-id>/result
 ```
 
-6. **View processed images** in your browser using the URLs from step 5.
+6. **View processed images** in your browser using the returned Minio URLs.
 
 ### Using Swagger UI
 
@@ -252,20 +298,25 @@ curl http://localhost:3000/upload/<upload-id>/result
 6. Copy the `upload_id` from the response
 7. Use the other endpoints to check status and get results
 
+### Using Minio Console
+
+1. Go to http://localhost:9001
+2. Login with `minioadmin` / `minioadmin123`
+3. Click on "Buckets"
+4. Browse `originals`, `processed`, and `thumbnails` buckets
+5. View uploaded and processed images directly
+
 ## 📁 Project Structure
 ```
 image-processor/
 ├── src/
 │   ├── upload/
-│   │   ├── upload.entity.ts       # Database entity
+│   │   ├── upload.entity.ts       # Database entity with S3 URLs
 │   │   ├── upload.service.ts      # Business logic
 │   │   ├── upload.controller.ts   # API endpoints
 │   │   ├── upload.module.ts       # Module configuration
-│   │   └── image.processor.ts     # Background worker
-│   ├── uploads/
-│   │   ├── original/              # Original uploaded images
-│   │   ├── processed/             # Resized and compressed images
-│   │   └── thumbnails/            # Generated thumbnails
+│   │   ├── image.processor.ts     # Background worker
+│   │   └── s3.service.ts          # S3/Minio integration
 │   ├── app.module.ts              # Root module
 │   └── main.ts                    # Application entry point
 ├── .env                           # Environment variables
@@ -277,15 +328,15 @@ image-processor/
 
 ### Architecture Overview
 ```
-         ┌─────────────┐
-         │   CLIENT    │
-         └──────┬──────┘
-                │
-                │ POST /upload
-                ↓
+┌─────────────┐
+│   CLIENT    │
+└──────┬──────┘
+       │
+       │ POST /upload (image in memory)
+       ↓
 ┌─────────────────────────────────┐
 │   UPLOAD CONTROLLER/SERVICE     │
-│  1. Save file to disk           │
+│  1. Upload to Minio (originals) │
 │  2. Create DB record (pending)  │
 │  3. Add job to queue            │
 │  4. Return upload_id instantly  │
@@ -300,21 +351,32 @@ image-processor/
              ↓
 ┌─────────────────────────────────┐
 │   IMAGE PROCESSOR WORKER        │
-│  1. Update status: processing   │
-│  2. Resize image                │
-│  3. Compress image              │
-│  4. Generate thumbnail          │
-│  5. Update status: completed    │
+│  1. Download from Minio         │
+│  2. Process in memory           │
+│     - Resize                    │
+│     - Compress                  │
+│     - Generate thumbnail        │
+│  3. Upload results to Minio     │
+│  4. Update DB with URLs         │
 └─────────────────────────────────┘
 ```
 
 ### Processing Details
 
-1. **Resize**: Images are resized to a maximum of 1920x1080 pixels while maintaining aspect ratio. Smaller images are not enlarged.
+1. **Upload**: Files are uploaded directly to Minio's `originals` bucket from memory (no local disk writes)
 
-2. **Compress**: Images are compressed to 80% quality using JPEG compression, significantly reducing file size.
+2. **Background Processing**:
+   - Worker downloads original from Minio
+   - Processes images in memory using Sharp
+   - Uploads processed images to respective Minio buckets
+   
+3. **Resize**: Images are resized to a maximum of 1920x1080 pixels while maintaining aspect ratio. Smaller images are not enlarged.
 
-3. **Thumbnail**: A 200x200 pixel thumbnail is generated using cover fit (crops to fill the square).
+4. **Compress**: Images are compressed to 80% quality using JPEG compression, significantly reducing file size.
+
+5. **Thumbnail**: A 200x200 pixel thumbnail is generated using cover fit (crops to fill the square).
+
+6. **Storage**: All files are stored in Minio with public read access, accessible via direct URLs.
 
 ## 🐛 Troubleshooting
 
@@ -328,6 +390,15 @@ docker ps  # Check if redis-queue is running
 docker start redis-queue  # If not running
 ```
 
+### Minio Connection Error
+
+**Error**: `Error connecting to Minio` or `NetworkingError`
+
+**Solution**: 
+1. Check if Minio is running: `docker ps`
+2. Verify Minio is accessible: `curl http://localhost:9000/minio/health/live`
+3. Restart if needed: `docker restart minio`
+
 ### PostgreSQL Connection Error
 
 **Error**: `password authentication failed`
@@ -337,15 +408,19 @@ docker start redis-queue  # If not running
 2. Ensure PostgreSQL is running
 3. Verify the database exists: `psql -U your_username -l`
 
-### Upload Directory Not Found
+### Buckets Not Found Error
 
-**Error**: `ENOENT: no such file or directory`
+**Error**: `The specified bucket does not exist`
 
-**Solution**: Create upload directories:
+**Solution**: Create the buckets in Minio console or via command:
 ```bash
-mkdir -p src/uploads/original
-mkdir -p src/uploads/processed
-mkdir -p src/uploads/thumbnails
+docker exec minio mc alias set myminio http://localhost:9000 minioadmin minioadmin123
+docker exec minio mc mb myminio/originals
+docker exec minio mc mb myminio/processed
+docker exec minio mc mb myminio/thumbnails
+docker exec minio mc anonymous set download myminio/originals
+docker exec minio mc anonymous set download myminio/processed
+docker exec minio mc anonymous set download myminio/thumbnails
 ```
 
 ### Image Processing Fails
@@ -354,25 +429,19 @@ Check the logs for specific errors. Common issues:
 - **Unsupported format**: Only jpg, jpeg, png, gif, webp are supported
 - **File too large**: Maximum file size is 10MB
 - **Corrupted image**: Ensure the uploaded file is a valid image
+- **Memory issues**: Very large images might need more memory allocation
 
 ## 🛑 Stopping the Application
 
 ### Stop the NestJS server
 Press `Ctrl+C` in the terminal
 
-### Stop Redis
+### Stop Docker containers
 ```bash
-docker stop redis-queue
-```
-
-### Stop PostgreSQL (if using Docker)
-```bash
-docker stop postgres-db
+docker stop redis-queue minio
 ```
 
 ### Remove containers (optional)
 ```bash
-docker rm redis-queue
-docker rm postgres-db  # if applicable
+docker rm redis-queue minio
 ```
-

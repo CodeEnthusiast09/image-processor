@@ -6,7 +6,6 @@ import {
   UseInterceptors,
   UploadedFile,
   BadRequestException,
-  NotFoundException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import {
@@ -17,8 +16,7 @@ import {
   ApiBody,
   ApiParam,
 } from '@nestjs/swagger';
-import { diskStorage } from 'multer';
-import { extname } from 'path';
+import { memoryStorage } from 'multer'; // ← CHANGE FROM diskStorage
 import { UploadService } from './upload.service';
 
 @ApiTags('upload')
@@ -58,15 +56,7 @@ export class UploadController {
   })
   @UseInterceptors(
     FileInterceptor('image', {
-      storage: diskStorage({
-        destination: './src/uploads/original',
-        filename: (req, file, callback) => {
-          const uniqueSuffix =
-            Date.now() + '-' + Math.round(Math.random() * 1e9);
-          const ext = extname(file.originalname);
-          callback(null, `${uniqueSuffix}${ext}`);
-        },
-      }),
+      storage: memoryStorage(), // ← CHANGED: Store in memory instead of disk
       fileFilter: (req, file, callback) => {
         if (!file.mimetype.match(/\/(jpg|jpeg|png|gif|webp)$/)) {
           return callback(
@@ -127,7 +117,7 @@ export class UploadController {
       };
     } catch (error: unknown) {
       const errMsg = error instanceof Error ? error.message : String(error);
-      throw new NotFoundException(errMsg);
+      throw new BadRequestException(errMsg);
     }
   }
 
@@ -142,12 +132,14 @@ export class UploadController {
         id: '7448e9cc-8993-4d9d-a6f8-98285726b969',
         original_name: 'my-image.jpg',
         status: 'completed',
-        original_url: '/uploads/original/my-image.jpg',
-        resized_url: '/uploads/processed/1765005321550-11259599-resized.jpeg',
+        original_url:
+          'http://localhost:9000/originals/1733481234567-123456789.jpeg',
+        resized_url:
+          'http://localhost:9000/processed/1733481234567-123456789-resized.jpeg',
         compressed_url:
-          '/uploads/processed/1765005321550-11259599-compressed.jpeg',
+          'http://localhost:9000/processed/1733481234567-123456789-compressed.jpeg',
         thumbnail_url:
-          '/uploads/thumbnails/1765005321550-11259599-thumbnail.jpeg',
+          'http://localhost:9000/thumbnails/1733481234567-123456789-thumbnail.jpeg',
         completed_at: '2025-12-06T07:00:05.000Z',
       },
     },
@@ -161,7 +153,7 @@ export class UploadController {
       return await this.uploadService.getUploadResult(id);
     } catch (error: unknown) {
       const errMsg = error instanceof Error ? error.message : String(error);
-      throw new NotFoundException(errMsg);
+      throw new BadRequestException(errMsg);
     }
   }
 }

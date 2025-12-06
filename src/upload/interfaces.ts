@@ -12,4 +12,6 @@ export interface UploadResult {
 export interface ImageProcessingJob {
   uploadId: string;
   filePath: string;
+  s3FileName: string;
+  bucketName: string;
 }

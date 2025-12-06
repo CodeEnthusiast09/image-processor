@@ -3,7 +3,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { InjectQueue } from '@nestjs/bull';
 import { Queue } from 'bull';
+import { ConfigService } from '@nestjs/config';
 import { Upload } from './upload.entity';
+import { S3Service } from './s3.service';
+import * as path from 'path';
 import { UploadResult } from './interfaces';
 
 @Injectable()
@@ -16,25 +19,50 @@ export class UploadService {
 
     @InjectQueue('image-processing')
     private imageQueue: Queue,
+
+    private s3Service: S3Service,
+    private configService: ConfigService,
   ) {}
 
   async createUpload(file: Express.Multer.File): Promise<Upload> {
     this.logger.log(`Received upload: ${file.originalname}`);
 
-    // 1. Create database record
+    // Generate unique filename
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    const ext = path.extname(file.originalname);
+    const s3FileName = `${uniqueSuffix}${ext}`;
+
+    // Upload original file to S3
+    const bucketName = this.configService.get<string>('MINIO_BUCKET_ORIGINALS');
+
+    if (!bucketName) {
+      throw new Error('MINIO_BUCKET_ORIGINALS is not defined in environment');
+    }
+
+    const s3Url = await this.s3Service.uploadBuffer(
+      bucketName,
+      s3FileName,
+      file.buffer,
+    );
+
+    this.logger.log(`Uploaded to S3: ${s3Url}`);
+
+    // Create database record
     const upload = this.uploadRepository.create({
       original_name: file.originalname,
-      original_path: file.path,
+      original_path: s3FileName, // Store S3 key
+      original_url: s3Url, // Store S3 URL
       status: 'pending',
     });
 
     const savedUpload = await this.uploadRepository.save(upload);
     this.logger.log(`Created upload record with ID: ${savedUpload.id}`);
 
-    // 2. Add job to queue for background processing
+    // Add job to queue for background processing
     await this.imageQueue.add('process-image', {
       uploadId: savedUpload.id,
-      filePath: savedUpload.original_path,
+      s3FileName: s3FileName,
+      bucketName: bucketName,
     });
 
     this.logger.log(`Queued processing job for upload: ${savedUpload.id}`);
@@ -47,7 +75,6 @@ export class UploadService {
 
     if (!upload) {
       this.logger.warn(`Upload not found: ${id}`);
-
       throw new NotFoundException('Upload not found');
     }
 
@@ -60,13 +87,11 @@ export class UploadService {
 
     if (!upload) {
       this.logger.warn(`Upload not found: ${id}`);
-
       throw new NotFoundException('Upload not found');
     }
 
     if (upload.status !== 'completed') {
       this.logger.warn(`Upload ${id} is ${upload.status}, not completed yet`);
-
       throw new Error(`Upload is ${upload.status}, not completed yet`);
     }
 
@@ -76,16 +101,10 @@ export class UploadService {
       id: upload.id,
       original_name: upload.original_name,
       status: upload.status,
-      original_url: `/uploads/original/${upload.original_name}`,
-      resized_url: upload.resized_path
-        ? `/uploads/processed/${upload.resized_path.split('/').pop()}`
-        : null,
-      compressed_url: upload.compressed_path
-        ? `/uploads/processed/${upload.compressed_path.split('/').pop()}`
-        : null,
-      thumbnail_url: upload.thumbnail_path
-        ? `/uploads/thumbnails/${upload.thumbnail_path.split('/').pop()}`
-        : null,
+      original_url: upload.original_url,
+      resized_url: upload.resized_url,
+      compressed_url: upload.compressed_url,
+      thumbnail_url: upload.thumbnail_url,
       completed_at: upload.completed_at,
     };
   }

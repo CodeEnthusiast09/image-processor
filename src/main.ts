@@ -1,18 +1,12 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { NestExpressApplication } from '@nestjs/platform-express';
-import { join } from 'path';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { Logger } from '@nestjs/common';
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
-
-  // Serve static files
-  app.useStaticAssets(join(__dirname, '..', 'src/uploads'), {
-    prefix: '/uploads/',
-  });
 
   // Swagger setup
   const config = new DocumentBuilder()
@@ -31,6 +25,7 @@ async function bootstrap() {
 
   logger.log('Server running on http://localhost:3000');
   logger.log('API Documentation: http://localhost:3000/api/docs');
+  logger.log('Minio Console: http://localhost:9001');
 }
 
 bootstrap().catch((error) => {

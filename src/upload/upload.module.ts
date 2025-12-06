@@ -5,6 +5,7 @@ import { UploadController } from './upload.controller';
 import { UploadService } from './upload.service';
 import { Upload } from './upload.entity';
 import { ImageProcessor } from './image.processor';
+import { S3Service } from './s3.service';
 
 @Module({
   imports: [
@@ -14,6 +15,6 @@ import { ImageProcessor } from './image.processor';
     }),
   ],
   controllers: [UploadController],
-  providers: [UploadService, ImageProcessor],
+  providers: [UploadService, ImageProcessor, S3Service],
 })
 export class UploadModule {}

@@ -1,13 +1,14 @@
 import { Process, Processor } from '@nestjs/bull';
+import { Logger } from '@nestjs/common';
 import { Job } from 'bull';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { ConfigService } from '@nestjs/config';
 import * as sharp from 'sharp';
 import * as path from 'path';
-import * as fs from 'fs';
 import { Upload } from './upload.entity';
+import { S3Service } from './s3.service';
 import { ImageProcessingJob } from './interfaces';
-import { Logger } from '@nestjs/common';
 
 @Processor('image-processing')
 export class ImageProcessor {
@@ -16,11 +17,13 @@ export class ImageProcessor {
   constructor(
     @InjectRepository(Upload)
     private uploadRepository: Repository<Upload>,
+    private s3Service: S3Service,
+    private configService: ConfigService,
   ) {}
 
   @Process('process-image')
   async handleImageProcessing(job: Job<ImageProcessingJob>) {
-    const { uploadId, filePath } = job.data;
+    const { uploadId, s3FileName, bucketName } = job.data;
 
     this.logger.log(`Started processing upload: ${uploadId}`);
 
@@ -30,77 +33,100 @@ export class ImageProcessor {
         status: 'processing',
       });
 
-      // Get the original file info
-      const upload = await this.uploadRepository.findOne({
-        where: { id: uploadId },
-      });
+      // Download original image from S3
+      this.logger.debug(`Downloading original image from S3: ${s3FileName}`);
+      const originalBuffer = await this.s3Service.downloadFile(
+        bucketName,
+        s3FileName,
+      );
 
-      if (!upload) {
-        throw new Error('Upload not found');
-      }
-
-      const originalFileName = path.basename(filePath);
-      const fileNameWithoutExt = path.parse(originalFileName).name;
-      const ext = path.parse(originalFileName).ext;
-
-      // Define output paths
-      const processedDir = path.join(process.cwd(), 'src/uploads/processed');
-      const thumbnailDir = path.join(process.cwd(), 'src/uploads/thumbnails');
-
-      // Ensure directories exist
-      if (!fs.existsSync(processedDir)) {
-        fs.mkdirSync(processedDir, { recursive: true });
-      }
-      if (!fs.existsSync(thumbnailDir)) {
-        fs.mkdirSync(thumbnailDir, { recursive: true });
-      }
+      const fileNameWithoutExt = path.parse(s3FileName).name;
+      const ext = path.parse(s3FileName).ext;
 
       const resizedFileName = `${fileNameWithoutExt}-resized${ext}`;
       const compressedFileName = `${fileNameWithoutExt}-compressed${ext}`;
       const thumbnailFileName = `${fileNameWithoutExt}-thumbnail${ext}`;
 
-      const resizedPath = path.join(processedDir, resizedFileName);
-      const compressedPath = path.join(processedDir, compressedFileName);
-      const thumbnailPath = path.join(thumbnailDir, thumbnailFileName);
+      const processedBucket = this.configService.get<string>(
+        'MINIO_BUCKET_PROCESSED',
+      );
 
-      // 1. Resize image (1920x1080 max, maintain aspect ratio)
+      const thumbnailBucket = this.configService.get<string>(
+        'MINIO_BUCKET_THUMBNAILS',
+      );
+
+      if (!processedBucket || !thumbnailBucket) {
+        throw new Error(
+          'MINIO_BUCKET_PROCESSED or MINIO_BUCKET_THUMBNAILS is missing',
+        );
+      }
+
+      // 1. Resize image
       this.logger.debug(`Resizing image for upload: ${uploadId}`);
-      await sharp(filePath)
+      const resizedBuffer = await sharp(originalBuffer)
         .resize(1920, 1080, {
           fit: 'inside',
           withoutEnlargement: true,
         })
-        .toFile(resizedPath);
+        .toBuffer();
 
-      // 2. Compress image (reduce quality to 80%)
+      const resizedUrl = await this.s3Service.uploadBuffer(
+        processedBucket,
+        resizedFileName,
+        resizedBuffer,
+      );
+
+      // 2. Compress image
       this.logger.debug(`Compressing image for upload: ${uploadId}`);
-      await sharp(filePath).jpeg({ quality: 80 }).toFile(compressedPath);
+      const compressedBuffer = await sharp(originalBuffer)
+        .jpeg({ quality: 80 })
+        .toBuffer();
 
-      // 3. Generate thumbnail (200x200, cover mode)
+      const compressedUrl = await this.s3Service.uploadBuffer(
+        processedBucket,
+        compressedFileName,
+        compressedBuffer,
+      );
+
+      // 3. Generate thumbnail
       this.logger.debug(`Generating thumbnail for upload: ${uploadId}`);
-      await sharp(filePath)
+      const thumbnailBuffer = await sharp(originalBuffer)
         .resize(200, 200, {
           fit: 'cover',
         })
-        .toFile(thumbnailPath);
+        .toBuffer();
 
-      // Update database with completed status and paths
+      const thumbnailUrl = await this.s3Service.uploadBuffer(
+        thumbnailBucket,
+        thumbnailFileName,
+        thumbnailBuffer,
+      );
+
+      // Update database with completed status and URLs
       await this.uploadRepository.update(uploadId, {
         status: 'completed',
-        resized_path: resizedPath,
-        compressed_path: compressedPath,
-        thumbnail_path: thumbnailPath,
+        resized_path: resizedFileName,
+        resized_url: resizedUrl,
+        compressed_path: compressedFileName,
+        compressed_url: compressedUrl,
+        thumbnail_path: thumbnailFileName,
+        thumbnail_url: thumbnailUrl,
         completed_at: new Date(),
       });
 
-      this.logger.log(`Completed processing upload: ${uploadId}`);
-    } catch (error: unknown) {
-      const message =
-        error instanceof Error ? error.message : 'Unknown processing error';
+      this.logger.log(`✅ Completed processing upload: ${uploadId}`);
+    } catch (err: unknown) {
+      const error = err as Error;
 
+      this.logger.error(
+        `Error processing upload ${uploadId}: ${error.message}`,
+        error.stack,
+      );
+
+      // Update database with failed status
       await this.uploadRepository.update(uploadId, {
         status: 'failed',
-        error: message,
+        error: error.message,
       });
 
       throw error;
