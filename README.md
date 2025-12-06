@@ -9,6 +9,10 @@
 
 A NestJS-based backend service that handles image uploads and processes them asynchronously in the background. Images are stored in Minio (S3-compatible storage), resized, compressed, and thumbnails are generated using a queue-based worker system.
 
+## 🌐 Live Demo
+**Live API**: https://image-processor-production-6ad4.up.railway.app
+**API Documentation**: https://image-processor-production-6ad4.up.railway.app/api/docs
+
 ## 🚀 Features
 
 - **Async Image Processing**: Upload images and receive instant response while processing happens in the background
